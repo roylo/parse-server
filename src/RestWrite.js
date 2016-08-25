@@ -32,7 +32,7 @@ function RestWrite(config, auth, className, query, data, originalData) {
     throw new Parse.Error(Parse.Error.INVALID_KEY_NAME, 'objectId ' +
                           'is an invalid field name.');
   }
-  
+
   // When the operation is complete, this.response may have several
   // fields.
   // response: the actual data to be returned
@@ -136,7 +136,7 @@ RestWrite.prototype.runBeforeTrigger = function() {
   if (this.response) {
     return;
   }
-  
+
   // Avoid doing any setup for triggers if there is no 'beforeSave' trigger for this class.
   if (!triggers.triggerExists(this.className, triggers.Types.beforeSave, this.config.applicationId)) {
     return Promise.resolve();
@@ -254,14 +254,14 @@ RestWrite.prototype.findUsersWithAuthData = function(authData) {
   }, []).filter((q) => {
     return typeof q !== undefined;
   });
-  
+
   let findPromise = Promise.resolve([]);
   if (query.length > 0) {
      findPromise = this.config.database.find(
         this.className,
         {'$or': query}, {})
   }
-  
+
   return findPromise;
 }
 
@@ -276,20 +276,48 @@ RestWrite.prototype.handleAuthData = function(authData) {
       throw new Parse.Error(Parse.Error.ACCOUNT_ALREADY_LINKED,
                               'this auth is already used');
     }
-    
+
     this.storage['authProvider'] = Object.keys(authData).join(',');
-    
+
     if (results.length == 0) {
       this.data.username = cryptoUtils.newToken();
     } else if (!this.query) {
       // Login with auth data
       // Short circuit
       delete results[0].password;
+      let userResult = results[0];
+      this.data.objectId = userResult.objectId;
+
+      // Determine if authData was updated
+      let mutatedAuthData = {};
+      Object.keys(authData).forEach((provider) => {
+        let providerData = authData[provider];
+        let userAuthData = userResult.authData[provider];
+        if (providerData.id == userAuthData.id) {
+          mutatedAuthData[provider] = providerData;
+        }
+      });
+
       this.response = {
-        response: results[0],
+        response: userResult,
         location: this.location()
       };
-      this.data.objectId = results[0].objectId;
+      
+      // We have authData that is updated on login
+      // that can happen when token are refreshed,
+      // We should update the token and let the user in
+      if (Object.keys(mutatedAuthData).length > 0) {
+        // Assign the new authData in the response
+        Object.keys(mutatedAuthData).forEach((provider) => {
+          this.response.response.authData[provider] = mutatedAuthData[provider];
+        });
+        // Run the DB update directly, as 'master'
+        // Just update the authData part
+        return this.config.database.update(this.className, {objectId: this.data.objectId}, {authData: mutatedAuthData}, {});
+      }
+      return;
+
+
     } else if (this.query && this.query.objectId) {
       // Trying to update auth data but users
       // are different
@@ -404,7 +432,7 @@ RestWrite.prototype.transformUser = function() {
 
 // Handles any followup logic
 RestWrite.prototype.handleFollowup = function() {
-  
+
   if (this.storage && this.storage['clearSessions']) {
     var sessionQuery = {
       user: {
@@ -417,7 +445,7 @@ RestWrite.prototype.handleFollowup = function() {
     this.config.database.destroy('_Session', sessionQuery)
     .then(this.handleFollowup.bind(this));
   }
-  
+
   if (this.storage && this.storage['sendVerificationEmail']) {
     delete this.storage['sendVerificationEmail'];
     // Fire and forget!
@@ -695,7 +723,7 @@ RestWrite.prototype.runDatabaseOperation = function() {
     throw new Parse.Error(Parse.Error.SESSION_MISSING,
                           'cannot modify user ' + this.query.objectId);
   }
-  
+
   if (this.className === '_Product' && this.data.download) {
     this.data.downloadName = this.data.download.name;
   }
@@ -722,7 +750,7 @@ RestWrite.prototype.runDatabaseOperation = function() {
       ACL[this.data.objectId] = { read: true, write: true };
       ACL['*'] = { read: true, write: false };
       this.data.ACL = ACL;
-    } 
+    }
     // Run a create
     return this.config.database.create(this.className, this.data, this.runOptions)
       .then(() => {
